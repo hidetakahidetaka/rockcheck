@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>施錠確認アプリ</title>
+    <!— Firebase SDKのインポート —>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebaseの設定をグローバル変数としてアクセスできるようにする
+        // Canvas環境から提供される__app_idと__firebase_configを使用
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        // Firebaseの初期化
+        console.log("Firebase: initializeAppを開始...");
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        console.log("Firebase: initializeApp完了。");
+
+        let userId = null; // ユーザーIDを格納する変数
+        let lastPressedTime = 0; // 最後にボタンを押した時刻 (ミリ秒)
+        const COOLDOWN_DURATION = 5 * 60 * 1000; // 5分 (ミリ秒)
+        let cooldownTimerId = null; // クールダウンタイマーのID
+
+        const MAX_LOCATION_HISTORY = 20; // 場所の履歴の最大件数
+        let currentLocationHistory = []; // 現在の場所履歴（メモリ上）
+
+        // UI要素の取得
+        const confirmButton = document.getElementById('confirmLock');
+        const cooldownMessage = document.getElementById('cooldownMessage');
+        const historyList = document.getElementById('historyList');
+        const userIdDisplay = document.getElementById('userIdDisplay');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const locationInput = document.getElementById('locationInput'); // 場所入力フィールド
+        const showHistoryButton = document.getElementById('showHistoryButton'); // 履歴表示ボタン
+        const customDropdown = document.getElementById('customDropdown'); // カスタムプルダウン
+
+
+        // 認証状態の変更を監視
+        console.log("Firebase Auth: 認証状態の監視を開始...");
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                userIdDisplay.textContent = `ユーザーID: ${userId}`;
+                loadingMessage.style.display = 'none'; // ロード中メッセージを非表示に
+                console.log(`Firebase Auth: ユーザーが認証されました。UID: ${userId}`);
+
+                // Firestoreから施錠履歴をリアルタイムで取得
+                console.log("Firestore: 施錠履歴のリアルタイム監視を開始...");
+                const lockEventsRef = collection(db, `artifacts/${appId}/users/${userId}/lockEvents`);
+                const q = query(lockEventsRef); // orderByは使用しない
+
+                onSnapshot(q, (snapshot) => {
+                    const lockEvents = [];
+                    snapshot.forEach((doc) => {
+                        lockEvents.push(doc.data());
+                    });
+                    // タイムスタンプで降順にソートし、最新の10件を取得
+                    lockEvents.sort((a, b) => b.timestamp - a.timestamp);
+                    renderHistory(lockEvents.slice(0, 10)); // 最新10件のみ表示
+                    console.log(`Firestore: 履歴が更新されました。現在の履歴数: ${lockEvents.length}`);
+
+                    // 最後の施錠時刻を更新
+                    if (lockEvents.length > 0) {
+                        lastPressedTime = lockEvents[0].timestamp;
+                        console.log(`Firestore: 最新の施錠時刻を更新: ${new Date(lastPressedTime).toLocaleString()}`);
+                    } else {
+                        lastPressedTime = 0; // 履歴がない場合はリセット
+                        console.log("Firestore: 履歴がありません。最終施錠時刻をリセット。");
+                    }
+                    updateButtonState(); // ボタンの状態を更新
+                }, (error) => {
+                    console.error("Firebase Firestore Error: 履歴の取得に失敗しました。", error);
+                    cooldownMessage.textContent = '履歴の取得に失敗しました。';
+                    cooldownMessage.style.color = '#ff8888';
+                });
+
+                // 場所の履歴を読み込む
+                await loadLocationHistory();
+                // 初期値の設定はここで一度だけ行う
+                if (currentLocationHistory.length > 0 && locationInput.value === '') {
+                    locationInput.value = currentLocationHistory[0]; // 履歴があれば最初のものをセット
+                } else if (currentLocationHistory.length === 0 && locationInput.value === '') {
+                    locationInput.value = ''; // 履歴がなければ空に
+                }
+
+            } else {
+                console.log("Firebase Auth: ユーザーは未認証です。匿名サインインを試みます。");
+                // 匿名サインイン
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                        console.log("Firebase Auth: カスタムトークンでサインイン成功。");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Firebase Auth: 匿名サインイン成功。");
+                    }
+                } catch (error) {
+                    console.error("Firebase Auth Error: 認証に失敗しました。", error);
+                    cooldownMessage.textContent = '認証に失敗しました。';
+                    cooldownMessage.style.color = '#ff8888';
+                }
+            }
+        });
+
+        // 場所の履歴をFirestoreから読み込む関数
+        async function loadLocationHistory() {
+            try {
+                const userSettingsRef = doc(db, `artifacts/${appId}/users/${userId}/userSettings/locationHistory`);
+                const docSnap = await getDoc(userSettingsRef);
+
+                if (docSnap.exists()) {
+                    currentLocationHistory = docSnap.data().locations || [];
+                    console.log("Firestore: 場所の履歴を読み込みました。", currentLocationHistory);
+                } else {
+                    currentLocationHistory = [];
+                    console.log("Firestore: 場所の履歴が見つかりませんでした。新規作成します。");
+                }
+                // Datalistは使用しないので、ここでは更新しない
+            } catch (error) {
+                console.error("Firestore Error: 場所の履歴の読み込みに失敗しました。", error);
+            }
+        }
+
+        // 場所の履歴をFirestoreに保存する関数
+        async function saveLocationHistory(newLocation) {
+            if (!newLocation || newLocation.trim() === '') {
+                return; // 空の場所は保存しない
+            }
+
+            const trimmedLocation = newLocation.trim();
+            // 既存の履歴から重複を削除し、最新のものを先頭に追加
+            currentLocationHistory = currentLocationHistory.filter(loc => loc !== trimmedLocation);
+            currentLocationHistory.unshift(trimmedLocation);
+
+            // 最大件数（20件）を超えないように調整
+            if (currentLocationHistory.length > MAX_LOCATION_HISTORY) {
+                currentLocationHistory = currentLocationHistory.slice(0, MAX_LOCATION_HISTORY);
+            }
+            
+            try {
+                const userSettingsRef = doc(db, `artifacts/${appId}/users/${userId}/userSettings/locationHistory`);
+                await setDoc(userSettingsRef, { locations: currentLocationHistory });
+                console.log("Firestore: 場所の履歴を保存しました。", currentLocationHistory);
+                // Datalistは使用しないので、ここでは更新しない
+            } catch (error) {
+                console.error("Firestore Error: 場所の履歴の保存に失敗しました。", error);
+            }
+        }
+
+        // カスタムプルダウンのアイテムをレンダリングする関数
+        function renderCustomDropdownItems(itemsToDisplay, isFiltered = false) {
+            customDropdown.innerHTML = ''; // 既存のオプションをクリア
+
+            if (itemsToDisplay.length === 0) {
+                const noMatchItem = document.createElement('div');
+                noMatchItem.className = 'custom-dropdown-item no-history-item';
+                noMatchItem.textContent = isFiltered ? '一致する履歴がありません' : '履歴がありません';
+                customDropdown.appendChild(noMatchItem);
+            } else {
+                itemsToDisplay.forEach(loc => {
+                    const item = document.createElement('div');
+                    item.className = 'custom-dropdown-item';
+                    item.textContent = loc;
+                    item.addEventListener('click', () => {
+                        locationInput.value = loc;
+                        hideCustomDropdown();
+                        locationInput.focus(); // 選択後に再度入力フィールドにフォーカスを戻す
+                    });
+                    customDropdown.appendChild(item);
+                });
+            }
+        }
+
+        // カスタムプルダウンを表示する関数 (フィルタリングの有無を引数で制御)
+        function showCustomDropdown(applyFilter = false) {
+            let itemsToDisplay = currentLocationHistory;
+            let isFiltered = false;
+
+            if (applyFilter) {
+                const filterText = locationInput.value.trim().toLowerCase();
+                if (filterText) { // フィルターテキストがある場合のみフィルタリング
+                    itemsToDisplay = currentLocationHistory.filter(loc => 
+                        loc.toLowerCase().includes(filterText)
+                    );
+                    isFiltered = true;
+                }
+            }
+            
+            renderCustomDropdownItems(itemsToDisplay, isFiltered);
+            customDropdown.style.display = 'block';
+        }
+
+        // カスタムプルダウンを非表示にする関数
+        function hideCustomDropdown() {
+            customDropdown.style.display = 'none';
+        }
+
+        // イベントリスナー: 入力フィールドのフォーカス時にプルダウン表示 (フィルタなしで全表示)
+        locationInput.addEventListener('focus', () => {
+            showCustomDropdown(false); // focus時はフィルタリングなしで全履歴表示
+        });
+        
+        // イベントリスナー: 入力フィールドの入力時にプルダウンを更新 (フィルタリングあり)
+        locationInput.addEventListener('input', () => {
+            showCustomDropdown(true); // input時はフィルタリングありで表示
+        });
+
+
+        // イベントリスナー: 履歴表示ボタンクリック時にプルダウン表示/非表示を切り替え
+        showHistoryButton.addEventListener('click', (e) => {
+            e.stopPropagation(); // documentのクリックイベントが発火しないようにする
+            if (customDropdown.style.display === 'block') {
+                hideCustomDropdown();
+            } else {
+                showCustomDropdown(false); // ボタンクリック時はフィルタリングなしで全履歴表示
+            }
+        });
+
+        // イベントリスナー: ドキュメントのどこかをクリックしたらプルダウンを非表示にする
+        document.addEventListener('click', (e) => {
+            // クリックされた要素が入力フィールド、ボタン、プルダウンのいずれでもない場合
+            if (!locationInput.contains(e.target) && !showHistoryButton.contains(e.target) && !customDropdown.contains(e.target)) {
+                hideCustomDropdown();
+            }
+        });
+
+
+        // 施錠確認ボタンがクリックされた時の処理
+        confirmButton.addEventListener('click', async () => {
+            if (confirmButton.disabled) {
+                console.warn("Button click ignored: ボタンが無効化されています。");
+                return;
+            }
+
+            confirmButton.disabled = true; // クリック直後にボタンを無効化
+            cooldownMessage.style.display = 'block';
+            cooldownMessage.style.color = '#fff'; // 記録中は白
+            cooldownMessage.textContent = '記録中...';
+            console.log("Button Click: 施錠確認ボタンが押されました。");
+
+            const now = Date.now(); // 現在のタイムスタンプ
+            const currentLocation = locationInput.value.trim(); // 場所入力フィールドの値を取得
+
+            try {
+                // Firestoreに施錠イベントを追加
+                console.log("Firestore: ドキュメントの追加を開始...");
+                const lockEventsRef = collection(db, `artifacts/${appId}/users/${userId}/lockEvents`);
+                await addDoc(lockEventsRef, {
+                    timestamp: now,
+                    date: new Date(now).toLocaleString('ja-JP', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                    }),
+                    location: currentLocation // 場所を追加
+                });
+                console.log("Firestore: ドキュメント追加成功。");
+
+                lastPressedTime = now; // 最後の押下時刻を更新
+                updateButtonState(); // ボタンの状態を更新 (クールダウンメッセージも更新される)
+                cooldownMessage.style.color = '#00ff00'; // 成功時は緑
+                cooldownMessage.textContent = '施錠時刻を記録しました！';
+                // 短時間で成功メッセージを表示後、クールダウンメッセージへ移行
+                setTimeout(() => updateButtonState(), 1000);
+
+                // 新しい場所を履歴に保存
+                await saveLocationHistory(currentLocation);
+
+            } catch (e) {
+                console.error("Firebase Firestore Error: ドキュメントの追加に失敗しました。", e);
+                cooldownMessage.textContent = '記録に失敗しました。';
+                cooldownMessage.style.color = '#ff8888'; // 失敗時は赤
+                confirmButton.disabled = false; // 失敗時はボタンを再有効化
+            }
+        });
+
+        // ボタンの状態とクールダウンメッセージを更新する関数
+        function updateButtonState() {
+            const now = Date.now();
+            const timeElapsed = now - lastPressedTime;
+            const remainingTime = COOLDOWN_DURATION - timeElapsed;
+
+            if (remainingTime > 0) {
+                confirmButton.disabled = true;
+                cooldownMessage.style.display = 'block';
+                cooldownMessage.style.color = '#ffff00'; // クールダウン中は黄色
+                const secondsRemaining = Math.ceil(remainingTime / 1000);
+                const minutes = Math.floor(secondsRemaining / 60);
+                const seconds = secondsRemaining % 60;
+                cooldownMessage.textContent = `押されました！ 次に押せるまで ${minutes}分${seconds}秒`;
+                
+                if (cooldownTimerId) {
+                    clearTimeout(cooldownTimerId);
+                }
+                cooldownTimerId = setTimeout(() => {
+                    updateButtonState();
+                }, remainingTime % 1000 || 1000);
+            } else {
+                confirmButton.disabled = false;
+                cooldownMessage.style.display = 'none';
+                cooldownMessage.textContent = '';
+                if (cooldownTimerId) {
+                    clearTimeout(cooldownTimerId);
+                    cooldownTimerId = null;
+                }
+            }
+        }
+
+        // 履歴を表示する関数
+        function renderHistory(events) {
+            historyList.innerHTML = '';
+
+            if (events.length === 0) {
+                historyList.innerHTML = '<li class="no-history">まだ施錠履歴がありません。</li>';
+                return;
+            }
+
+            events.forEach((event, index) => {
+                const listItem = document.createElement('li');
+                // 場所が記録されていれば表示
+                const locationText = event.location ? `${event.location}` : '場所未設定'; 
+
+                if (index === 0) {
+                     listItem.innerHTML = `<span class="latest-entry">最新: ${event.date}</span> - ${locationText}`;
+                } else {
+                    listItem.innerHTML = `${event.date} - ${locationText}`;
+                }
+                historyList.appendChild(listItem);
+            });
+            console.log("History: 履歴が画面に描画されました。");
+        }
+
+        // ページロード時に初回状態更新と履歴表示
+        window.onload = () => {
+            console.log("Window Loaded: ページロード完了。");
+            confirmButton.disabled = true;
+            loadingMessage.style.display = 'block';
+            cooldownMessage.style.display = 'none';
+        };
+
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #1f1f1f, #000000);
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow-x: hidden;
+        }
+
+        .container {
+            background-color: #2c2c2c;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 255, 255, 0.2), 0 0 80px rgba(0, 255, 255, 0.1);
+            padding: 30px;
+            border: 2px solid #00ffff;
+            max-width: 400px;
+            width: 90%;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        h1 {
+            color: #00ffff;
+            font-size: 1.8em;
+            margin-bottom: 25px;
+            text-shadow: 0 0 8px rgba(0, 255, 255, 0.7);
+        }
+
+        /* 場所入力グループのスタイル */
+        .input-group {
+            margin-bottom: 80px; /* ★修正点: プルダウンの高さとボタンを考慮した十分な余白 */
+            text-align: left;
+            width: 100%;
+            max-width: 320px; /* ★修正点: PCでの最大幅を調整 (320px) */
+            margin-left: auto;
+            margin-right: auto;
+            position: relative;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #00ffff;
+            font-weight: bold;
+        }
+
+        .location-input-wrapper {
+            display: flex;
+            align-items: center;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .location-input-wrapper input[type="text"] {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #00ffff;
+            border-radius: 8px 0 0 8px;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            font-size: 1em;
+            box-sizing: border-box;
+            outline: none;
+            box-shadow: inset 0 0 5px rgba(0, 255, 255, 0.3);
+            transition: border-color 0.2s, box-shadow 0.2s;
+            min-width: 0;
+        }
+
+        .location-input-wrapper input[type="text"]:focus {
+            border-color: #00ddff;
+            box-shadow: inset 0 0 8px rgba(0, 255, 255, 0.5), 0 0 10px rgba(0, 255, 255, 0.4);
+        }
+
+        .show-history-button {
+            background-color: #0088bb;
+            color: white;
+            border: none;
+            border-radius: 0 8px 8px 0;
+            padding: 10px 8px;
+            cursor: pointer;
+            font-size: 1em;
+            height: 100%;
+            margin-left: -1px;
+            transition: background-color 0.2s, box-shadow 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .show-history-button:hover {
+            background-color: #006699;
+        }
+
+        /* カスタムプルダウンのスタイル */
+        .custom-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background-color: #3a3a3a;
+            border: 1px solid #00ffff;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 255, 255, 0.3);
+            max-height: 200px; /* 高さを制限し、スクロール可能に */
+            overflow-y: auto;
+            z-index: 100;
+            display: none;
+            margin-top: 5px;
+        }
+
+        .custom-dropdown-item {
+            padding: 10px 15px;
+            cursor: pointer;
+            text-align: left;
+            color: #e0e0e0;
+            transition: background-color 0.15s;
+        }
+
+        .custom-dropdown-item:hover, .custom-dropdown-item.active {
+            background-color: #004455;
+        }
+
+        .custom-dropdown-item.no-history-item {
+            color: #aaa;
+            font-style: italic;
+            cursor: default;
+        }
+        .custom-dropdown-item.no-history-item:hover {
+            background-color: transparent;
+        }
+
+
+        #confirmLock {
+            background: linear-gradient(145deg, #00ddee, #0088bb);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 15px 30px;
+            font-size: 1.2em;
+            cursor: pointer;
+            box-shadow: 0 5px 15px rgba(0, 255, 255, 0.5);
+            transition: all 0.2s ease-in-out;
+            font-weight: bold;
+            width: 100%;
+            max-width: 250px;
+            margin-bottom: 20px;
+        }
+
+        #confirmLock:hover:not(:disabled) {
+            background: linear-gradient(145deg, #0088bb, #00ddee);
+            transform: translateY(-2px);
+            box-shadow: 0 7px 20px rgba(0, 255, 255, 0.7);
+        }
+
+        #confirmLock:active:not(:disabled) {
+            background: linear-gradient(145deg, #0088bb, #00ddee);
+            box-shadow: 0 2px 5px rgba(0, 255, 255, 0.5);
+            transform: translateY(2px);
+        }
+
+        #confirmLock:disabled {
+            background: #444;
+            color: #888;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        #cooldownMessage {
+            margin-top: 15px;
+            font-size: 1.1em;
+            min-height: 1.2em;
+            margin-bottom: 20px;
+        }
+
+        .history-section {
+            background-color: #3a3a3a;
+            border: 1px solid #00ffff;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 25px;
+            width: calc(100% - 2px); /* 幅を調整してボーダー分を考慮 */
+            max-width: 338px; /* コンテナに合わせてmax-widthを338pxに調整 (400px - 2*padding(30px) - 2*border(2px)) */
+            box-sizing: border-box;
+            margin-left: auto;
+            margin-right: auto;
+            text-align: left;
+        }
+
+        .history-section h2 {
+            color: #00ffff;
+            font-size: 1.3em;
+            margin-top: 0;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        #historyList {
+            list-style: none;
+            padding: 0;
+            max-height: 250px;
+            overflow-y: auto;
+            border-top: 1px solid rgba(0, 255, 255, 0.3);
+            padding-top: 10px;
+        }
+
+        #historyList li {
+            background-color: #4a4a4a;
+            margin-bottom: 8px;
+            padding: 10px 15px;
+            border-radius: 5px;
+            color: #e0e0e0;
+            font-size: 0.95em;
+            border-left: 3px solid #00ffff;
+            box-shadow: 0 2px 5px rgba(0, 255, 255, 0.1);
+            line-height: 1.4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        #historyList li:last-child {
+            margin-bottom: 0;
+        }
+
+        .no-history {
+            text-align: center;
+            color: #aaa;
+            font-style: italic;
+        }
+
+        .latest-entry {
+            font-weight: bold;
+            color: #fff;
+            text-shadow: 0 0 5px #00ffff;
+            margin-right: 5px;
+        }
+
+        #userIdDisplay {
+            margin-top: 20px;
+            font-size: 0.8em;
+            color: #888;
+            word-break: break-all;
+        }
+        #loadingMessage {
+            color: #00ffff;
+            font-size: 1.2em;
+            margin-bottom: 20px;
+        }
+
+        /* モバイル向け調整 */
+        @media (max-width: 600px) {
+            .container {
+                padding: 20px;
+                margin-top: 20px;
+            }
+            h1 {
+                font-size: 1.5em;
+            }
+            .input-group {
+                max-width: 280px; /* モバイルでは入力グループの幅を少し小さく */
+                margin-bottom: 70px; /* モバイルでも十分な余白を確保 */
+            }
+            .location-input-wrapper input[type="text"],
+            .show-history-button,
+            #confirmLock {
+                padding: 12px 25px;
+                font-size: 1.1em;
+            }
+            .history-section {
+                padding: 15px;
+                max-width: calc(100% - 30px - 2px); /* モバイルでは100%からパディングとボーダーを引く */
+            }
+            #historyList li {
+                padding: 8px 12px;
+                font-size: 0.9em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="loadingMessage" style="display: none;">アプリを読み込み中...</div>
+        <h1>玄関施錠 確認</h1>
+        
+        <!— 場所入力グループ —>
+        <div class="input-group">
+            <label for="locationInput">場所:</label>
+            <div class="location-input-wrapper">
+                <input type="text" id="locationInput" placeholder="例: 玄関, リビング" autocomplete="off">
+                <button type="button" id="showHistoryButton" class="show-history-button" aria-label="履歴を表示">▼</button> <!— 下向き矢印 —>
+                <div id="customDropdown" class="custom-dropdown">
+                    <!— カスタム履歴アイテムがここに動的に追加されます —>
+                </div>
+            </div>
+        </div>
+
+        <button id="confirmLock">施錠した！</button>
+        <div id="cooldownMessage"></div>
+
+        <div class="history-section">
+            <h2>施錠履歴 (最新10件)</h2>
+            <ul id="historyList">
+                <!— 履歴がここに動的に動的に表示されます —>
+            </ul>
+        </div>
+        <div id="userIdDisplay"></div>
+    </div>
+</body>
+</html>
+
+
