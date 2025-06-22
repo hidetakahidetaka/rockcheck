@@ -4,16 +4,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>施錠確認アプリ</title>
-    <!— Firebase SDKのインポート —>
+    <!-- Firebase SDKのインポート -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, query, onSnapshot, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebaseの設定をグローバル変数としてアクセスできるようにする
-        // Canvas環境から提供される__app_idと__firebase_configを使用
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        // ==============================================================================
+        // ★重要★ ここをあなたのFirebaseプロジェクトの情報に置き換えてください！
+        // Firebaseコンソールの「プロジェクト設定」→「マイアプリ」のウェブアプリ設定で
+        // 「Firebase SDK スニペット」の「Config」から取得できる情報を貼り付けます。
+        // ==============================================================================
+        const firebaseConfig = {
+             apiKey: "AIzaSyAZ9xFLolkufIGJXKLzuqo2SzqSlh6qHhc",
+             authDomain: "geminiapp-956be.firebaseapp.com",
+             projectId: "geminiapp-956be",
+              storageBucket: "geminiapp-956be.firebasestorage.app",
+              messagingSenderId: "246717389748",
+             appId: "1:246717389748:web:295d4d1afd01cf82f630e1",
+            　measurementId: "G-XRCET1515V"
+
+        };
+
+        const appId = firebaseConfig.appId; // FirebaseConfigからappIdを取得
 
         // Firebaseの初期化
         console.log("Firebase: initializeAppを開始...");
@@ -93,13 +106,9 @@
                 console.log("Firebase Auth: ユーザーは未認証です。匿名サインインを試みます。");
                 // 匿名サインイン
                 try {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                        console.log("Firebase Auth: カスタムトークンでサインイン成功。");
-                    } else {
-                        await signInAnonymously(auth);
-                        console.log("Firebase Auth: 匿名サインイン成功。");
-                    }
+                    // 公開環境では匿名認証を使用します。
+                    await signInAnonymously(auth);
+                    console.log("Firebase Auth: 匿名サインイン成功。");
                 } catch (error) {
                     console.error("Firebase Auth Error: 認証に失敗しました。", error);
                     cooldownMessage.textContent = '認証に失敗しました。';
@@ -151,7 +160,7 @@
             } catch (error) {
                 console.error("Firestore Error: 場所の履歴の保存に失敗しました。", error);
             }
-        }
+        });
 
         // カスタムプルダウンのアイテムをレンダリングする関数
         function renderCustomDropdownItems(itemsToDisplay, isFiltered = false) {
@@ -385,10 +394,10 @@
 
         /* 場所入力グループのスタイル */
         .input-group {
-            margin-bottom: 80px; /* ★修正点: プルダウンの高さとボタンを考慮した十分な余白 */
+            margin-bottom: 260px; /* プルダウンの最大高さ(200px) + マージン(5px) + ボタンとの距離(適当に) を考慮 */
             text-align: left;
             width: 100%;
-            max-width: 320px; /* ★修正点: PCでの最大幅を調整 (320px) */
+            max-width: 320px; /* PCでの最大幅を調整 (320px) */
             margin-left: auto;
             margin-right: auto;
             position: relative;
@@ -452,7 +461,7 @@
         /* カスタムプルダウンのスタイル */
         .custom-dropdown {
             position: absolute;
-            top: 100%;
+            top: calc(100% + 5px); /* 入力フィールドの直下に配置 + マージン */
             left: 0;
             right: 0;
             background-color: #3a3a3a;
@@ -463,7 +472,6 @@
             overflow-y: auto;
             z-index: 100;
             display: none;
-            margin-top: 5px;
         }
 
         .custom-dropdown-item {
@@ -616,7 +624,7 @@
                 font-size: 1.5em;
             }
             .input-group {
-                max-width: 280px; /* モバイルでは入力グループの幅を少し小さく */
+                max-width: 280px; /* モバイルでの最大幅を調整 */
                 margin-bottom: 70px; /* モバイルでも十分な余白を確保 */
             }
             .location-input-wrapper input[type="text"],
@@ -641,14 +649,14 @@
         <div id="loadingMessage" style="display: none;">アプリを読み込み中...</div>
         <h1>玄関施錠 確認</h1>
         
-        <!— 場所入力グループ —>
+        <!-- 場所入力グループ -->
         <div class="input-group">
             <label for="locationInput">場所:</label>
             <div class="location-input-wrapper">
                 <input type="text" id="locationInput" placeholder="例: 玄関, リビング" autocomplete="off">
-                <button type="button" id="showHistoryButton" class="show-history-button" aria-label="履歴を表示">▼</button> <!— 下向き矢印 —>
+                <button type="button" id="showHistoryButton" class="show-history-button" aria-label="履歴を表示">&#9660;</button> <!-- 下向き矢印 -->
                 <div id="customDropdown" class="custom-dropdown">
-                    <!— カスタム履歴アイテムがここに動的に追加されます —>
+                    <!-- カスタム履歴アイテムがここに動的に追加されます -->
                 </div>
             </div>
         </div>
@@ -659,12 +667,11 @@
         <div class="history-section">
             <h2>施錠履歴 (最新10件)</h2>
             <ul id="historyList">
-                <!— 履歴がここに動的に動的に表示されます —>
+                <!-- 履歴がここに動的に動的に表示されます -->
             </ul>
         </div>
         <div id="userIdDisplay"></div>
     </div>
 </body>
-</html>
 
 
