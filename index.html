@@ -11,19 +11,29 @@
         import { getFirestore, collection, addDoc, query, onSnapshot, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // ==============================================================================
-        // ★重要★ ここをあなたのFirebaseプロジェクトの情報に置き換えてください！
-        // Firebaseコンソールの「プロジェクト設定」→「マイアプリ」のウェブアプリ設定で
-        // 「Firebase SDK スニペット」の「Config」から取得できる情報を貼り付けます。
+        // ★★★ 最も重要！ここをあなたのFirebaseプロジェクトの情報で置き換えてください！ ★★★
+        // Firebaseコンソール（console.firebase.google.com）であなたのプロジェクトを開き、
+        // 「プロジェクト設定」（歯車アイコン）→「マイアプリ」のウェブアプリ（</>アイコン）の設定から
+        // 「Firebase SDK スニペット」の「Config」タブの内容をコピーして、ここに貼り付けます。
+        // 例:
+        // const firebaseConfig = {
+        //   apiKey: "AIzaSyC...",
+        //   authDomain: "your-project-id.firebaseapp.com",
+        //   projectId: "your-project-id",
+        //   storageBucket: "your-project-id.appspot.com",
+        //   messagingSenderId: "...",
+        //   appId: "1:...",
+        //   // measurementId: "G-..." // これは省略可能
+        // };
         // ==============================================================================
-        const firebaseConfig = {
-             apiKey: "AIzaSyAZ9xFLolkufIGJXKLzuqo2SzqSlh6qHhc",
-             authDomain: "geminiapp-956be.firebaseapp.com",
-             projectId: "geminiapp-956be",
-              storageBucket: "geminiapp-956be.firebasestorage.app",
-              messagingSenderId: "246717389748",
-             appId: "1:246717389748:web:295d4d1afd01cf82f630e1",
-            　measurementId: "G-XRCET1515V"
-
+       const firebaseConfig = {
+          apiKey: "AIzaSyAZ9xFLolkufIGJXKLzuqo2SzqSlh6qHhc",
+          authDomain: "geminiapp-956be.firebaseapp.com",
+          projectId: "geminiapp-956be",
+          storageBucket: "geminiapp-956be.firebasestorage.app",
+          messagingSenderId: "246717389748",
+          appId: "1:246717389748:web:295d4d1afd01cf82f630e1",
+          measurementId: "G-XRCET1515V"
         };
 
         const appId = firebaseConfig.appId; // FirebaseConfigからappIdを取得
@@ -133,6 +143,7 @@
                 // Datalistは使用しないので、ここでは更新しない
             } catch (error) {
                 console.error("Firestore Error: 場所の履歴の読み込みに失敗しました。", error);
+            MessageChannel.textContent = 'エラー: 場所の履歴の読み込みに失敗しました。';
             }
         }
 
@@ -159,8 +170,9 @@
                 // Datalistは使用しないので、ここでは更新しない
             } catch (error) {
                 console.error("Firestore Error: 場所の履歴の保存に失敗しました。", error);
+                cooldownMessage.textContent = 'エラー: 場所の履歴の保存に失敗しました。';
             }
-        });
+        }
 
         // カスタムプルダウンのアイテムをレンダリングする関数
         function renderCustomDropdownItems(itemsToDisplay, isFiltered = false) {
@@ -563,8 +575,8 @@
         #historyList {
             list-style: none;
             padding: 0;
-            max-height: 250px;
-            overflow-y: auto;
+            max-height: 250px; /* 履歴リストの最大高さ */
+            overflow-y: auto; /* スクロール可能に */
             border-top: 1px solid rgba(0, 255, 255, 0.3);
             padding-top: 10px;
         }
@@ -578,11 +590,7 @@
             font-size: 0.95em;
             border-left: 3px solid #00ffff;
             box-shadow: 0 2px 5px rgba(0, 255, 255, 0.1);
-            line-height: 1.4;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            flex-wrap: wrap;
+            line-height: 1.4; /* 行間を調整 */
         }
 
         #historyList li:last-child {
@@ -599,14 +607,13 @@
             font-weight: bold;
             color: #fff;
             text-shadow: 0 0 5px #00ffff;
-            margin-right: 5px;
         }
 
         #userIdDisplay {
             margin-top: 20px;
             font-size: 0.8em;
             color: #888;
-            word-break: break-all;
+            word-break: break-all; /* 長いIDがはみ出さないように */
         }
         #loadingMessage {
             color: #00ffff;
@@ -673,5 +680,4 @@
         <div id="userIdDisplay"></div>
     </div>
 </body>
-
-
+</html>
